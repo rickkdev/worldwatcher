@@ -1,0 +1,3 @@
+# Worldwatcher
+
+Initial repository setup.

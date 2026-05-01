@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
@@ -11,6 +12,9 @@ const port = Number(process.env.PORT || 5173);
 const cache = new Map();
 const cacheTtlMs = 5 * 60 * 1000;
 const requestTimeoutMs = 25 * 1000;
+const openSkyRequestTimeoutMs = Number(process.env.OPENSKY_TIMEOUT_MS || 60_000);
+const backupDir = path.join(__dirname, process.env.FEED_BACKUP_DIR || '.data/feed-backups');
+const aisMaxVessels = Number(process.env.AISSTREAM_MAX_VESSELS || 10000);
 const openSkyToken = { value: null, expiresAt: 0 };
 const aisVessels = new Map();
 const aisStatus = { connected: false, lastMessageAt: null, error: null };
@@ -114,7 +118,7 @@ app.get('/api/feed/:id', async (req, res) => {
   }
 
   try {
-    const sourceUrl = feed.sourceUrl || (typeof feed.url === 'function' ? feed.url() : feed.url);
+    const sourceUrl = sourceUrlFor(feed);
     const cached = cache.get(feed.id);
     if (cached && Date.now() - cached.cachedAt < (feed.ttlMs || cacheTtlMs)) {
       res.json(cached.payload);
@@ -123,7 +127,16 @@ app.get('/api/feed/:id', async (req, res) => {
 
     if (feed.handler) {
       const payload = await feed.handler(feed);
+      if (isEmptyPayload(payload)) {
+        const backup = await readFeedBackup(feed.id, 'live feed returned no items');
+        if (backup) {
+          cache.set(feed.id, { cachedAt: Date.now(), payload: backup });
+          res.json(backup);
+          return;
+        }
+      }
       cache.set(feed.id, { cachedAt: Date.now(), payload });
+      await writeFeedBackup(feed.id, payload);
       res.json(payload);
       return;
     }
@@ -150,14 +163,30 @@ app.get('/api/feed/:id', async (req, res) => {
       fetchedAt: new Date().toISOString(),
       items,
     };
+    if (isEmptyPayload(payload)) {
+      const backup = await readFeedBackup(feed.id, 'live feed returned no items');
+      if (backup) {
+        cache.set(feed.id, { cachedAt: Date.now(), payload: backup });
+        res.json(backup);
+        return;
+      }
+    }
     cache.set(feed.id, { cachedAt: Date.now(), payload });
+    await writeFeedBackup(feed.id, payload);
     res.json(payload);
   } catch (error) {
+    const backup = await readFeedBackup(feed.id, error.message);
+    if (backup) {
+      cache.set(feed.id, { cachedAt: Date.now(), payload: backup });
+      res.json(backup);
+      return;
+    }
+
     res.status(502).json({
       id: feed.id,
       name: feed.name,
       category: feed.category,
-      sourceUrl: feed.sourceUrl || (typeof feed.url === 'function' ? feed.url() : feed.url),
+      sourceUrl: sourceUrlFor(feed),
       fetchedAt: new Date().toISOString(),
       error: error.message,
       items: [],
@@ -185,6 +214,43 @@ app.listen(port, () => {
 
 startAisStream();
 
+async function writeFeedBackup(feedId, payload) {
+  if (isEmptyPayload(payload)) return;
+
+  await fs.mkdir(backupDir, { recursive: true });
+  const filePath = feedBackupPath(feedId);
+  const tempPath = `${filePath}.tmp`;
+  const backupPayload = {
+    ...payload,
+    backupWrittenAt: new Date().toISOString(),
+  };
+  await fs.writeFile(tempPath, JSON.stringify(backupPayload, null, 2));
+  await fs.rename(tempPath, filePath);
+}
+
+async function readFeedBackup(feedId, reason) {
+  try {
+    const raw = await fs.readFile(feedBackupPath(feedId), 'utf8');
+    const payload = JSON.parse(raw);
+    return {
+      ...payload,
+      stale: true,
+      backupReason: reason,
+      servedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function feedBackupPath(feedId) {
+  return path.join(backupDir, `${feedId}.latest.json`);
+}
+
+function isEmptyPayload(payload) {
+  return !Array.isArray(payload?.items) || payload.items.length === 0;
+}
+
 async function fetchOpenSkyFeed(feed) {
   if (!process.env.OPENSKY_CLIENT_ID || !process.env.OPENSKY_CLIENT_SECRET) {
     throw new Error('Missing OPENSKY_CLIENT_ID or OPENSKY_CLIENT_SECRET');
@@ -198,7 +264,7 @@ async function fetchOpenSkyFeed(feed) {
       Accept: 'application/json',
       'User-Agent': 'worldwatcher-local-dashboard/0.1',
     },
-    signal: AbortSignal.timeout(requestTimeoutMs),
+    signal: AbortSignal.timeout(openSkyRequestTimeoutMs),
   });
 
   if (!response.ok) {
@@ -257,10 +323,14 @@ function openSkyStatesUrl() {
   return `https://opensky-network.org/api/states/all?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
 }
 
+function sourceUrlFor(feed) {
+  if (feed.id === 'opensky') return openSkyStatesUrl();
+  return feed.sourceUrl || (typeof feed.url === 'function' ? feed.url() : feed.url);
+}
+
 function parseOpenSkyStates(data) {
   return (data.states || [])
     .filter((state) => state[5] !== null && state[6] !== null)
-    .slice(0, 100)
     .map((state) => {
       const callsign = String(state[1] || '').trim();
       const country = state[2] || 'Unknown country';
@@ -282,6 +352,14 @@ function parseOpenSkyStates(data) {
         url: 'https://opensky-network.org/network/explorer',
         source: 'OpenSky',
         severity: state[8] ? 'info' : 'live',
+        latitude: Number(state[6]),
+        longitude: Number(state[5]),
+        altitudeMeters: altitude !== null ? Math.round(Number(altitude)) : null,
+        speedKts,
+        track,
+        callsign: callsign || null,
+        icao24: state[0],
+        onGround: Boolean(state[8]),
       };
     });
 }
@@ -297,7 +375,6 @@ function fetchAisStreamFeed(feed) {
 
   const items = [...aisVessels.values()]
     .sort((a, b) => timestampValue(b.timestamp) - timestampValue(a.timestamp))
-    .slice(0, 100)
     .map((vessel) => ({
       title: `${vessel.name || `MMSI ${vessel.mmsi}`} position report`,
       summary: [
@@ -313,6 +390,14 @@ function fetchAisStreamFeed(feed) {
       url: 'https://aisstream.io/',
       source: 'AISStream',
       severity: 'live',
+      latitude: vessel.latitude,
+      longitude: vessel.longitude,
+      speedKts: vessel.speed !== null && vessel.speed !== undefined ? Number(vessel.speed) : null,
+      course: vessel.course !== null && vessel.course !== undefined ? Number(vessel.course) : null,
+      heading: vessel.heading !== null && vessel.heading !== undefined ? Number(vessel.heading) : null,
+      mmsi: vessel.mmsi,
+      vesselName: vessel.name || null,
+      shipType: vessel.shipType || null,
     }));
 
   return {
@@ -385,8 +470,9 @@ function ingestAisMessage(data) {
     timestamp: metadata.time_utc || metadata.Time_UTC || new Date().toISOString(),
   });
 
-  if (aisVessels.size > 500) {
-    const stale = [...aisVessels.entries()].sort((a, b) => timestampValue(a[1].timestamp) - timestampValue(b[1].timestamp)).slice(0, 100);
+  if (aisVessels.size > aisMaxVessels) {
+    const pruneCount = Math.max(1, Math.floor(aisMaxVessels * 0.1));
+    const stale = [...aisVessels.entries()].sort((a, b) => timestampValue(a[1].timestamp) - timestampValue(b[1].timestamp)).slice(0, pruneCount);
     stale.forEach(([key]) => aisVessels.delete(key));
   }
 }

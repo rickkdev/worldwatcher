@@ -461,8 +461,10 @@ function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus 
     });
 
     L.control.zoom({ position: 'bottomright' }).addTo(map.current);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 20,
     }).addTo(map.current);
     signalLayer.current = new SignalCanvasLayer(records).addTo(map.current);
 

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { AlertTriangle, Crosshair, Database, ExternalLink, Plane, RefreshCw, Search, Shield, Signal } from 'lucide-react';
+import { AlertTriangle, Crosshair, Database, ExternalLink, PanelRightClose, PanelRightOpen, Plane, RefreshCw, Search, Shield, Signal } from 'lucide-react';
 import shipMarkerUrl from './assets/ship-marker.png';
 import './styles.css';
 
@@ -46,6 +46,7 @@ function App() {
   const [feedData, setFeedData] = useState({});
   const [selectedFeed, setSelectedFeed] = useState('all');
   const [mapVisibility, setMapVisibility] = useState({});
+  const [recordsPanelOpen, setRecordsPanelOpen] = useState(true);
   const [query, setQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -140,11 +141,18 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="topbar">
+      <MapPanel
+        records={mapRecords}
+        flights={flightRecords}
+        totalFlights={allFlightRecords.length}
+        isRefreshing={isRefreshing}
+        openSkyStatus={openSkyStatus}
+      />
+
+      <section className="brand-panel">
         <div>
           <div className="eyebrow"><Shield size={15} /> Worldwatcher</div>
-          <h1>Public Signal Board</h1>
-          <p>Text-first feed aggregation for aircraft, vessels, conflict, crisis, sanctions, cyber, and alert context.</p>
+          <h1>Signal Map</h1>
         </div>
         <button className="refresh-button" onClick={loadFeeds} disabled={isRefreshing}>
           <RefreshCw size={17} className={isRefreshing ? 'spinning' : ''} />
@@ -154,12 +162,11 @@ function App() {
 
       <section className="metrics-row">
         <Metric icon={<Database size={18} />} label="Sources" value={feeds.length} />
-        <Metric icon={<Signal size={18} />} label="Records Loaded" value={records.length} />
-        <Metric icon={<AlertTriangle size={18} />} label="Feed Errors" value={sourceStats.filter((feed) => feed.error).length} />
+        <Metric icon={<Signal size={18} />} label="Records" value={records.length} />
+        <Metric icon={<AlertTriangle size={18} />} label="Errors" value={sourceStats.filter((feed) => feed.error).length} />
       </section>
 
-      <section className="workspace">
-        <aside className="source-panel">
+      <aside className="source-panel">
           <div className="panel-title">Text Feeds</div>
           <div className="source-row">
             <button className={selectedFeed === 'all' ? 'source active' : 'source'} onClick={() => setSelectedFeed('all')}>
@@ -193,18 +200,31 @@ function App() {
               </label>
             </div>
           ))}
-        </aside>
+      </aside>
 
-        <section className="feed-board">
-          <MapPanel
-            records={mapRecords}
-            flights={flightRecords}
-            totalFlights={allFlightRecords.length}
-            isRefreshing={isRefreshing}
-            openSkyStatus={openSkyStatus}
-          />
+      <button
+        className="records-drawer-toggle"
+        type="button"
+        onClick={() => setRecordsPanelOpen((open) => !open)}
+        aria-expanded={recordsPanelOpen}
+        aria-controls="records-drawer"
+      >
+        {recordsPanelOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+        Records
+      </button>
 
-          <div className="controls">
+      <aside id="records-drawer" className={recordsPanelOpen ? 'records-drawer open' : 'records-drawer'}>
+        <div className="drawer-header">
+          <div>
+            <div className="panel-title">Signal Records</div>
+            <strong>{filteredRecords.length}</strong>
+          </div>
+          <button type="button" onClick={() => setRecordsPanelOpen(false)} aria-label="Close records panel">
+            <PanelRightClose size={18} />
+          </button>
+        </div>
+
+        <div className="controls">
             <label className="search-box">
               <Search size={17} />
               <input
@@ -216,9 +236,9 @@ function App() {
             <div className="last-updated">
               {isRefreshing ? 'Refreshing feeds...' : `Showing ${filteredRecords.length} records`}
             </div>
-          </div>
+        </div>
 
-          <div className="cards">
+        <div className="cards">
             {selectedSource?.error && (
               <div className="feed-error">
                 <strong>{selectedSource.name} error</strong>
@@ -262,9 +282,8 @@ function App() {
                 <p>Clear the search field or select a different source.</p>
               </div>
             )}
-          </div>
-        </section>
-      </section>
+        </div>
+      </aside>
     </main>
   );
 }

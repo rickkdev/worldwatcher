@@ -100,6 +100,88 @@ const FEEDS = [
   },
 ];
 
+const COUNTRY_CENTROIDS = {
+  afghanistan: [33.9391, 67.71],
+  argentina: [-38.4161, -63.6167],
+  australia: [-25.2744, 133.7751],
+  brazil: [-14.235, -51.9253],
+  canada: [56.1304, -106.3468],
+  china: [35.8617, 104.1954],
+  colombia: [4.5709, -74.2973],
+  congo: [-0.228, 15.8277],
+  cuba: [21.5218, -77.7812],
+  egypt: [26.8206, 30.8025],
+  ethiopia: [9.145, 40.4897],
+  france: [46.2276, 2.2137],
+  germany: [51.1657, 10.4515],
+  india: [20.5937, 78.9629],
+  indonesia: [-0.7893, 113.9213],
+  iran: [32.4279, 53.688],
+  iraq: [33.2232, 43.6793],
+  israel: [31.0461, 34.8516],
+  italy: [41.8719, 12.5674],
+  japan: [36.2048, 138.2529],
+  kenya: [-0.0236, 37.9062],
+  lebanon: [33.8547, 35.8623],
+  libya: [26.3351, 17.2283],
+  macedonia: [41.6086, 21.7453],
+  malaysia: [4.2105, 101.9758],
+  mali: [17.5707, -3.9962],
+  mexico: [23.6345, -102.5528],
+  myanmar: [21.9162, 95.956],
+  niger: [17.6078, 8.0817],
+  nigeria: [9.082, 8.6753],
+  pakistan: [30.3753, 69.3451],
+  palestine: [31.9522, 35.2332],
+  philippines: [12.8797, 121.774],
+  poland: [51.9194, 19.1451],
+  russia: [61.524, 105.3188],
+  somalia: [5.1521, 46.1996],
+  sudan: [12.8628, 30.2176],
+  syria: [34.8021, 38.9968],
+  taiwan: [23.6978, 120.9605],
+  turkey: [38.9637, 35.2433],
+  ukraine: [48.3794, 31.1656],
+  "united arab emirates": [23.4241, 53.8478],
+  "united kingdom": [55.3781, -3.436],
+  "united states": [37.0902, -95.7129],
+  venezuela: [6.4238, -66.5897],
+  yemen: [15.5527, 48.5164],
+};
+
+const COUNTRY_ALIASES = {
+  ae: "united arab emirates",
+  au: "australia",
+  br: "brazil",
+  ca: "canada",
+  cn: "china",
+  de: "germany",
+  eg: "egypt",
+  fr: "france",
+  gb: "united kingdom",
+  il: "israel",
+  in: "india",
+  iq: "iraq",
+  ir: "iran",
+  jp: "japan",
+  lb: "lebanon",
+  mm: "myanmar",
+  mx: "mexico",
+  ng: "nigeria",
+  pk: "pakistan",
+  ps: "palestine",
+  ru: "russia",
+  sd: "sudan",
+  sy: "syria",
+  tr: "turkey",
+  tw: "taiwan",
+  ua: "ukraine",
+  uk: "united kingdom",
+  us: "united states",
+  usa: "united states",
+  "united states of america": "united states",
+};
+
 app.get('/api/feeds', (_req, res) => {
   res.json(FEEDS.map(({ id, name, category, url, sourceUrl, keyed }) => ({
     id,
@@ -232,8 +314,9 @@ async function readFeedBackup(feedId, reason) {
   try {
     const raw = await fs.readFile(feedBackupPath(feedId), 'utf8');
     const payload = JSON.parse(raw);
+    const enrichedPayload = enrichBackupPayload(feedId, payload);
     return {
-      ...payload,
+      ...enrichedPayload,
       stale: true,
       backupReason: reason,
       servedAt: new Date().toISOString(),
@@ -241,6 +324,44 @@ async function readFeedBackup(feedId, reason) {
   } catch {
     return null;
   }
+}
+
+function enrichBackupPayload(feedId, payload) {
+  if (!Array.isArray(payload?.items)) return payload;
+
+  return {
+    ...payload,
+    items: payload.items.map((item) => {
+      if (Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude))) return item;
+
+      if (feedId === 'gdelt') {
+        const coordinates = countryCoordinates(item.location);
+        return coordinates
+          ? {
+              ...item,
+              severity: item.severity === 'info' ? 'warning' : item.severity,
+              latitude: coordinates[0],
+              longitude: coordinates[1],
+              locationPrecision: 'Country-level approximation from GDELT source country',
+            }
+          : item;
+      }
+
+      if (feedId === 'hdx') {
+        const coordinates = countryCoordinates(item.location);
+        return coordinates
+          ? {
+              ...item,
+              latitude: coordinates[0],
+              longitude: coordinates[1],
+              locationPrecision: 'Country-level dataset coverage approximation',
+            }
+          : item;
+      }
+
+      return item;
+    }),
+  };
 }
 
 function feedBackupPath(feedId) {
@@ -478,28 +599,39 @@ function ingestAisMessage(data) {
 }
 
 function parseGdelt(data) {
-  return (data.articles || []).slice(0, 25).map((article) => ({
-    title: article.title || 'Untitled article',
-    summary: article.seendate ? `Seen ${formatCompactDate(article.seendate)} from ${article.domain || 'unknown source'}.` : article.domain || '',
-    location: article.sourcecountry || article.domain || 'Unknown',
-    timestamp: article.seendate || null,
-    url: article.url,
-    source: article.domain || 'GDELT',
-    severity: 'info',
-  }));
+  return (data.articles || []).slice(0, 25).map((article) => {
+    const coordinates = countryCoordinates(article.sourcecountry);
+    return {
+      title: article.title || 'Untitled article',
+      summary: article.seendate ? `Seen ${formatCompactDate(article.seendate)} from ${article.domain || 'unknown source'}.` : article.domain || '',
+      location: article.sourcecountry || article.domain || 'Unknown',
+      timestamp: article.seendate || null,
+      url: article.url,
+      source: article.domain || 'GDELT',
+      severity: 'warning',
+      latitude: coordinates?.[0] ?? null,
+      longitude: coordinates?.[1] ?? null,
+      locationPrecision: coordinates ? 'Country-level approximation from GDELT source country' : null,
+    };
+  });
 }
 
 function parseHdx(data) {
   return (data.result?.results || []).slice(0, 25).map((dataset) => {
     const organizations = [dataset.organization?.title, dataset.dataset_source].filter(Boolean).join(' / ');
+    const location = dataset.groups?.map((group) => group.display_name || group.name).filter(Boolean).join(', ') || 'Global';
+    const coordinates = countryCoordinates(location);
     return {
       title: dataset.title || dataset.name || 'Untitled HDX dataset',
       summary: stripHtml(dataset.notes || dataset.license_other || '').slice(0, 320),
-      location: dataset.groups?.map((group) => group.display_name || group.name).join(', ') || 'Global',
+      location,
       timestamp: dataset.last_modified || dataset.metadata_modified || null,
       url: dataset.url || `https://data.humdata.org/dataset/${dataset.name}`,
       source: organizations || 'HDX',
       severity: 'info',
+      latitude: coordinates?.[0] ?? null,
+      longitude: coordinates?.[1] ?? null,
+      locationPrecision: coordinates ? 'Country-level dataset coverage approximation' : null,
     };
   });
 }
@@ -507,6 +639,7 @@ function parseHdx(data) {
 function parseGdacs(data) {
   return (data.features || []).slice(0, 25).map((feature) => {
     const props = feature.properties || {};
+    const coordinates = geoJsonCoordinates(feature.geometry);
     return {
       title: props.name || props.eventname || `${props.eventtype || 'Alert'} event`,
       summary: `${props.eventtype || 'GDACS'} alert level ${props.alertlevel || 'unknown'}${props.severitydata ? `, severity ${props.severitydata}` : ''}.`,
@@ -515,6 +648,9 @@ function parseGdacs(data) {
       url: props.url?.report || props.url?.geometry || 'https://www.gdacs.org/',
       source: 'GDACS',
       severity: String(props.alertlevel || 'info').toLowerCase(),
+      latitude: coordinates?.[0] ?? null,
+      longitude: coordinates?.[1] ?? null,
+      locationPrecision: coordinates ? 'Source geometry' : null,
     };
   });
 }
@@ -522,6 +658,7 @@ function parseGdacs(data) {
 function parseUsgs(data) {
   return (data.features || []).map((feature) => {
     const props = feature.properties || {};
+    const coordinates = geoJsonCoordinates(feature.geometry);
     return {
       title: props.title || 'Earthquake',
       summary: `Magnitude ${props.mag ?? 'unknown'} earthquake. Status: ${props.status || 'unknown'}.`,
@@ -530,6 +667,9 @@ function parseUsgs(data) {
       url: props.url,
       source: 'USGS',
       severity: props.tsunami ? 'warning' : 'info',
+      latitude: coordinates?.[0] ?? null,
+      longitude: coordinates?.[1] ?? null,
+      locationPrecision: coordinates ? 'Source epicenter geometry' : null,
     };
   });
 }
@@ -537,6 +677,7 @@ function parseUsgs(data) {
 function parseNws(data) {
   return (data.features || []).slice(0, 25).map((feature) => {
     const props = feature.properties || {};
+    const coordinates = geoJsonCoordinates(feature.geometry);
     return {
       title: props.headline || props.event || 'NWS Alert',
       summary: stripHtml(props.description || props.instruction || '').slice(0, 320),
@@ -545,6 +686,9 @@ function parseNws(data) {
       url: props['@id'] || 'https://api.weather.gov/alerts/active',
       source: props.senderName || 'NWS',
       severity: String(props.severity || 'info').toLowerCase(),
+      latitude: coordinates?.[0] ?? null,
+      longitude: coordinates?.[1] ?? null,
+      locationPrecision: coordinates ? 'Approximate center of source alert geometry' : null,
     };
   });
 }
@@ -654,6 +798,57 @@ function formatCompactDate(value) {
   );
   const date = new Date(parsed);
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+function geoJsonCoordinates(geometry) {
+  const pairs = coordinatePairs(geometry?.coordinates);
+  if (!pairs.length) return null;
+
+  const totals = pairs.reduce(
+    (current, pair) => ({
+      latitude: current.latitude + pair[1],
+      longitude: current.longitude + pair[0],
+    }),
+    { latitude: 0, longitude: 0 },
+  );
+
+  return [totals.latitude / pairs.length, totals.longitude / pairs.length];
+}
+
+function coordinatePairs(value) {
+  if (!Array.isArray(value)) return [];
+  if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
+    return [[Number(value[0]), Number(value[1])]];
+  }
+
+  return value.flatMap((item) => coordinatePairs(item));
+}
+
+function countryCoordinates(value) {
+  const candidates = String(value || '')
+    .split(/[,;/|]/)
+    .map((item) => normalizeCountryName(item))
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const alias = COUNTRY_ALIASES[candidate] || candidate;
+    if (COUNTRY_CENTROIDS[alias]) return COUNTRY_CENTROIDS[alias];
+  }
+
+  return null;
+}
+
+function normalizeCountryName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\bdemocratic republic of\b/g, ' ')
+    .replace(/\bfederal republic of\b/g, ' ')
+    .replace(/\brepublic of\b/g, ' ')
+    .replace(/\bthe\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function lastMonthDate() {

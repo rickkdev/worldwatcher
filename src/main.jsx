@@ -21,6 +21,18 @@ const feedContext = {
     marker: 'vessel',
     glyph: '',
   },
+  gdelt: {
+    label: 'Conflict media signal',
+    description: 'GDELT reports news-derived conflict coverage. Map positions are source-provided or country-level approximations when exact coordinates are not available.',
+    marker: 'conflict',
+    glyph: 'X',
+  },
+  hdx: {
+    label: 'Humanitarian conflict dataset',
+    description: 'HDX reports conflict, security, and displacement datasets. Map positions are usually country-level dataset coverage, not an incident point.',
+    marker: 'conflict',
+    glyph: 'D',
+  },
   gdacs: {
     label: 'Disaster alert',
     description: 'GDACS reports global disaster alerts such as earthquakes, storms, floods, volcanoes, and droughts for crisis context.',
@@ -400,6 +412,9 @@ class SignalCanvasLayer extends L.Layer {
       } else if (record.feedId === 'aisstream') {
         this.drawShip(point, shipHeading(record));
         this.hits.push({ x: point.x, y: point.y, radius: 13, record, latLng });
+      } else if (contextFor(record).marker === 'conflict') {
+        this.drawConflict(point, contextFor(record));
+        this.hits.push({ x: point.x, y: point.y, radius: 12, record, latLng });
       } else {
         this.drawSignal(point, contextFor(record));
         this.hits.push({ x: point.x, y: point.y, radius: 10, record, latLng });
@@ -458,6 +473,37 @@ class SignalCanvasLayer extends L.Layer {
     ctx.restore();
   }
 
+  drawConflict(point, context) {
+    const ctx = this.context;
+    ctx.save();
+    ctx.translate(point.x, point.y);
+    ctx.fillStyle = '#8f2f1e';
+    ctx.strokeStyle = '#f3bd4f';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -12);
+    ctx.lineTo(12, 0);
+    ctx.lineTo(0, 12);
+    ctx.lineTo(-12, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(-5, -5);
+    ctx.lineTo(5, 5);
+    ctx.moveTo(5, -5);
+    ctx.lineTo(-5, 5);
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 8px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (context.glyph === 'D') ctx.fillText('D', 0, 0.5);
+    ctx.restore();
+  }
+
   drawSignal(point, context) {
     const ctx = this.context;
     const color = markerColor(context.marker);
@@ -487,7 +533,7 @@ class SignalCanvasLayer extends L.Layer {
     const hit = this.hits.findLast((item) => Math.hypot(item.x - x, item.y - y) <= item.radius);
     if (!hit) return;
 
-    if (isTrackFeed(hit.record.feedId) && this.onTrackSelect) {
+    if (usesDetailModal(hit.record) && this.onTrackSelect) {
       this.map.closePopup();
       this.onTrackSelect(hit.record);
       return;
@@ -567,10 +613,16 @@ function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus,
 function TrackModal({ record, onClose }) {
   const isAircraft = record.feedId === 'opensky';
   const isVessel = record.feedId === 'aisstream';
+  const isConflict = isConflictFeed(record.feedId);
   const context = contextFor(record);
   const coords = coordinatesFor(record);
   const sections = trackDetailSections(record);
   const rawFields = rawRecordFields(record);
+  const modalLabel = isAircraft ? 'Aircraft details' : isVessel ? 'Ship details' : 'Conflict event details';
+  const matchLabel = isAircraft || isVessel ? 'Military Match' : 'Position Precision';
+  const matchValue = isAircraft || isVessel
+    ? (isMilitaryTrack(record) ? 'Heuristic match' : 'No public marker')
+    : (record.locationPrecision || 'Source provided');
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -587,14 +639,16 @@ function TrackModal({ record, onClose }) {
         className="track-modal"
         role="dialog"
         aria-modal="true"
-        aria-label={isAircraft ? 'Aircraft details' : 'Ship details'}
+        aria-label={modalLabel}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="track-modal-header">
-          <div className="track-icon">{isAircraft ? <Plane size={22} /> : <Ship size={22} />}</div>
+          <div className={isConflict ? 'track-icon conflict' : 'track-icon'}>
+            {isAircraft ? <Plane size={22} /> : isVessel ? <Ship size={22} /> : <AlertTriangle size={22} />}
+          </div>
           <div>
             <div className="popup-feed">{context.label}</div>
-            <h2>{record.title || (isAircraft ? 'Aircraft track' : 'Vessel track')}</h2>
+            <h2>{record.title || (isAircraft ? 'Aircraft track' : isVessel ? 'Vessel track' : 'Mapped conflict signal')}</h2>
             <p>{context.description}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close details">
@@ -606,7 +660,7 @@ function TrackModal({ record, onClose }) {
           <TrackStat label="Source" value={record.source || record.feedName} />
           <TrackStat label="Updated" value={formatDate(record.timestamp)} />
           <TrackStat label="Coordinates" value={coords ? `${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : 'Unavailable'} />
-          <TrackStat label="Military Match" value={isMilitaryTrack(record) ? 'Heuristic match' : 'No public marker'} />
+          <TrackStat label={matchLabel} value={matchValue} />
         </div>
 
         {record.summary && (
@@ -624,7 +678,7 @@ function TrackModal({ record, onClose }) {
         </div>
 
         <div className="track-modal-footer">
-          <span>Public ADS-B/AIS data can be missing, delayed, spoofed, or incomplete.</span>
+          <span>{detailModalCaveat(record)}</span>
           {record.url && (
             <a href={record.url} target="_blank" rel="noreferrer">
               Open source <ExternalLink size={14} />
@@ -785,6 +839,14 @@ function isTrackFeed(feedId) {
   return feedId === 'opensky' || feedId === 'aisstream';
 }
 
+function isConflictFeed(feedId) {
+  return feedId === 'gdelt' || feedId === 'hdx';
+}
+
+function usesDetailModal(record) {
+  return isTrackFeed(record.feedId) || isConflictFeed(record.feedId);
+}
+
 function isMilitaryTrack(item) {
   if (item.feedId === 'opensky') return isMilitaryAircraft(item);
   if (item.feedId === 'aisstream') return isMilitaryVessel(item);
@@ -882,6 +944,7 @@ function markerAnchor(record) {
 
 function markerColor(marker) {
   if (marker === 'vessel') return '#1f6f57';
+  if (marker === 'conflict') return '#8f2f1e';
   if (marker === 'alert' || marker === 'warning') return '#8f2f1e';
   if (marker === 'seismic') return '#745116';
   return '#34424f';
@@ -1004,6 +1067,41 @@ function trackDetailSections(record) {
     ];
   }
 
+  if (isConflictFeed(record.feedId)) {
+    return [
+      {
+        title: 'Conflict Signal',
+        rows: [
+          ['Title', record.title],
+          ['Feed', record.feedName],
+          ['Category', record.category],
+          ['Source', record.source],
+          ['Severity', record.severity],
+          ['Report time', formatDate(record.timestamp)],
+        ],
+      },
+      {
+        title: 'Location',
+        rows: [
+          ['Location', record.location],
+          ['Latitude', record.latitude],
+          ['Longitude', record.longitude],
+          ['Position precision', record.locationPrecision || 'Source provided'],
+          ['Mapping note', conflictMappingNote(record)],
+        ],
+      },
+      {
+        title: 'Source Context',
+        rows: [
+          ['Summary', record.summary],
+          ['Source URL', record.url],
+          ['Data source', record.feedId === 'gdelt' ? 'GDELT media-derived article coverage' : 'HDX humanitarian dataset metadata'],
+          ['Interpretation', record.feedId === 'gdelt' ? 'Reported media signal, not independently verified incident truth' : 'Dataset coverage context, not a live incident report'],
+        ],
+      },
+    ];
+  }
+
   return [
     {
       title: 'Record Details',
@@ -1026,6 +1124,18 @@ function displayValue(value) {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'Unavailable';
   return hasDisplayValue(value) ? String(value) : 'Unavailable';
+}
+
+function conflictMappingNote(record) {
+  if (record.feedId === 'gdelt') return 'GDELT document results usually expose source country rather than exact event coordinates.';
+  if (record.feedId === 'hdx') return 'HDX records usually describe dataset geographic coverage rather than one event point.';
+  return null;
+}
+
+function detailModalCaveat(record) {
+  if (isTrackFeed(record.feedId)) return 'Public ADS-B/AIS data can be missing, delayed, spoofed, or incomplete.';
+  if (isConflictFeed(record.feedId)) return 'Conflict markers are public-source signals and may be country-level approximations. Verify the linked source before drawing conclusions.';
+  return 'Public data can be incomplete or delayed. Verify the linked source before drawing conclusions.';
 }
 
 function detailLines(record) {
@@ -1054,6 +1164,7 @@ function detailLines(record) {
   return [
     ['Feed', record.feedName || record.source || 'Unknown'],
     ['Location', record.location || 'Unknown'],
+    ['Position detail', record.locationPrecision || 'Source provided'],
     ['Report', record.summary || 'No summary provided'],
   ];
 }

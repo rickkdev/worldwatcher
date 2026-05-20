@@ -627,6 +627,21 @@ h1 {
   border-color: rgba(31, 111, 87, 0.45);
 }
 
+.signal-marker.conflict {
+  border-color: #f3bd4f;
+  background: #8f2f1e;
+  color: #ffffff;
+  transform: rotate(45deg);
+}
+
+.signal-marker.conflict::after {
+  border-color: rgba(143, 47, 30, 0.5);
+}
+
+.signal-marker.conflict {
+  line-height: 1;
+}
+
 .signal-marker.alert,
 .signal-marker.warning {
   background: #8f2f1e;
@@ -761,6 +776,12 @@ h1 {
   border-radius: 8px;
   background: rgba(56, 242, 178, 0.08);
   color: var(--green);
+}
+
+.track-icon.conflict {
+  border-color: rgba(243, 189, 79, 0.52);
+  background: rgba(143, 47, 30, 0.22);
+  color: var(--amber);
 }
 
 .track-modal-header h2 {

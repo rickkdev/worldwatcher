@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { AlertTriangle, Crosshair, Database, ExternalLink, PanelRightClose, PanelRightOpen, Plane, RefreshCw, Search, Shield, Signal } from 'lucide-react';
+import { AlertTriangle, Crosshair, Database, ExternalLink, PanelRightClose, PanelRightOpen, Plane, RefreshCw, Search, Shield, Ship, Signal, X } from 'lucide-react';
 import shipMarkerUrl from './assets/ship-marker.png';
 import './styles.css';
 
@@ -48,6 +48,7 @@ function App() {
   const [mapVisibility, setMapVisibility] = useState({});
   const [recordsPanelOpen, setRecordsPanelOpen] = useState(true);
   const [militaryOnly, setMilitaryOnly] = useState(false);
+  const [selectedTrack, setSelectedTrack] = useState(null);
   const [query, setQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -150,6 +151,7 @@ function App() {
         totalFlights={allFlightRecords.length}
         isRefreshing={isRefreshing}
         openSkyStatus={openSkyStatus}
+        onTrackSelect={setSelectedTrack}
       />
 
       <section className="brand-panel">
@@ -303,8 +305,12 @@ function App() {
                 <p>Clear the search field or select a different source.</p>
               </div>
             )}
-        </div>
+          </div>
       </aside>
+
+      {selectedTrack && (
+        <TrackModal record={selectedTrack} onClose={() => setSelectedTrack(null)} />
+      )}
     </main>
   );
 }
@@ -320,9 +326,10 @@ function Metric({ icon, label, value }) {
 }
 
 class SignalCanvasLayer extends L.Layer {
-  constructor(records = []) {
+  constructor(records = [], onTrackSelect = null) {
     super();
     this.records = records;
+    this.onTrackSelect = onTrackSelect;
     this.hits = [];
     this.shipImage = new Image();
     this.shipImage.onload = () => this.draw();
@@ -349,6 +356,10 @@ class SignalCanvasLayer extends L.Layer {
   setRecords(records) {
     this.records = records;
     this.draw();
+  }
+
+  setTrackSelectHandler(onTrackSelect) {
+    this.onTrackSelect = onTrackSelect;
   }
 
   reset() {
@@ -476,6 +487,12 @@ class SignalCanvasLayer extends L.Layer {
     const hit = this.hits.findLast((item) => Math.hypot(item.x - x, item.y - y) <= item.radius);
     if (!hit) return;
 
+    if (isTrackFeed(hit.record.feedId) && this.onTrackSelect) {
+      this.map.closePopup();
+      this.onTrackSelect(hit.record);
+      return;
+    }
+
     L.popup()
       .setLatLng(hit.latLng)
       .setContent(popupHtml(hit.record, contextFor(hit.record)))
@@ -483,7 +500,7 @@ class SignalCanvasLayer extends L.Layer {
   }
 }
 
-function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus }) {
+function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus, onTrackSelect }) {
   const mapElement = useRef(null);
   const map = useRef(null);
   const signalLayer = useRef(null);
@@ -506,7 +523,7 @@ function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus 
       subdomains: 'abcd',
       maxZoom: 20,
     }).addTo(map.current);
-    signalLayer.current = new SignalCanvasLayer(records).addTo(map.current);
+    signalLayer.current = new SignalCanvasLayer(records, onTrackSelect).addTo(map.current);
 
     setTimeout(() => map.current?.invalidateSize(), 0);
   }, []);
@@ -514,6 +531,10 @@ function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus 
   useEffect(() => {
     signalLayer.current?.setRecords(records);
   }, [records]);
+
+  useEffect(() => {
+    signalLayer.current?.setTrackSelectHandler(onTrackSelect);
+  }, [onTrackSelect]);
 
   useEffect(() => {
     if (!map.current || !flights.length) return;
@@ -539,6 +560,106 @@ function MapPanel({ records, flights, totalFlights, isRefreshing, openSkyStatus 
         <Plane size={17} />
         <span>{isRefreshing ? 'Refreshing' : `${records.length} mapped signals`}</span>
       </div>
+    </section>
+  );
+}
+
+function TrackModal({ record, onClose }) {
+  const isAircraft = record.feedId === 'opensky';
+  const isVessel = record.feedId === 'aisstream';
+  const context = contextFor(record);
+  const coords = coordinatesFor(record);
+  const sections = trackDetailSections(record);
+  const rawFields = rawRecordFields(record);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') onClose();
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="track-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={isAircraft ? 'Aircraft details' : 'Ship details'}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="track-modal-header">
+          <div className="track-icon">{isAircraft ? <Plane size={22} /> : <Ship size={22} />}</div>
+          <div>
+            <div className="popup-feed">{context.label}</div>
+            <h2>{record.title || (isAircraft ? 'Aircraft track' : 'Vessel track')}</h2>
+            <p>{context.description}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close details">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="track-summary-row">
+          <TrackStat label="Source" value={record.source || record.feedName} />
+          <TrackStat label="Updated" value={formatDate(record.timestamp)} />
+          <TrackStat label="Coordinates" value={coords ? `${coords[0].toFixed(4)}, ${coords[1].toFixed(4)}` : 'Unavailable'} />
+          <TrackStat label="Military Match" value={isMilitaryTrack(record) ? 'Heuristic match' : 'No public marker'} />
+        </div>
+
+        {record.summary && (
+          <div className="track-summary">
+            <strong>Source Summary</strong>
+            <p>{record.summary}</p>
+          </div>
+        )}
+
+        <div className="track-detail-sections">
+          {sections.map((section) => (
+            <DetailSection key={section.title} title={section.title} rows={section.rows} />
+          ))}
+          <DetailSection title="Raw Feed Fields" rows={rawFields} />
+        </div>
+
+        <div className="track-modal-footer">
+          <span>Public ADS-B/AIS data can be missing, delayed, spoofed, or incomplete.</span>
+          {record.url && (
+            <a href={record.url} target="_blank" rel="noreferrer">
+              Open source <ExternalLink size={14} />
+            </a>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TrackStat({ label, value }) {
+  return (
+    <div className="track-stat">
+      <span>{label}</span>
+      <strong>{displayValue(value)}</strong>
+    </div>
+  );
+}
+
+function DetailSection({ title, rows }) {
+  const visibleRows = rows.filter(([, value]) => hasDisplayValue(value));
+  if (!visibleRows.length) return null;
+
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      <dl>
+        {visibleRows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{displayValue(value)}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -807,6 +928,104 @@ function popupHtml(record, context) {
     <small>${escapeHtml(formatDate(record.timestamp))}</small>
     ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">Open source</a>` : ''}
   `;
+}
+
+function trackDetailSections(record) {
+  if (record.feedId === 'opensky') {
+    return [
+      {
+        title: 'Aircraft Identity',
+        rows: [
+          ['Callsign', record.callsign],
+          ['ICAO24', record.icao24],
+          ['Origin country', record.title?.split(' over ')[1]],
+          ['Feed', record.feedName],
+          ['Category', record.category],
+          ['Military heuristic', isMilitaryAircraft(record) ? 'Matched known public callsign pattern' : 'No military marker found in public fields'],
+        ],
+      },
+      {
+        title: 'Flight State',
+        rows: [
+          ['State', record.onGround ? 'On ground' : 'Airborne'],
+          ['Speed', record.speedKts !== null && record.speedKts !== undefined ? `${record.speedKts} kt` : null],
+          ['Altitude', record.altitudeMeters !== null && record.altitudeMeters !== undefined ? `${record.altitudeMeters} m` : null],
+          ['Track', record.track !== null && record.track !== undefined ? `${record.track} deg` : null],
+          ['Severity', record.severity],
+        ],
+      },
+      {
+        title: 'Position And Source',
+        rows: [
+          ['Latitude', record.latitude],
+          ['Longitude', record.longitude],
+          ['Location', record.location],
+          ['Last contact', formatDate(record.timestamp)],
+          ['Source', record.source],
+          ['Source URL', record.url],
+        ],
+      },
+    ];
+  }
+
+  if (record.feedId === 'aisstream') {
+    return [
+      {
+        title: 'Vessel Identity',
+        rows: [
+          ['Vessel name', record.vesselName],
+          ['MMSI', record.mmsi],
+          ['Ship type', record.shipType],
+          ['Feed', record.feedName],
+          ['Category', record.category],
+          ['Military heuristic', isMilitaryVessel(record) ? 'Matched AIS type, naval prefix, or naval term' : 'No military marker found in public fields'],
+        ],
+      },
+      {
+        title: 'Movement',
+        rows: [
+          ['Speed', record.speedKts !== null && record.speedKts !== undefined ? `${Number(record.speedKts).toFixed(1)} kt` : null],
+          ['Course', validDirection(record.course) ? `${Number(record.course).toFixed(0)} deg` : null],
+          ['Heading', validDirection(record.heading) ? `${Number(record.heading).toFixed(0)} deg` : null],
+          ['Severity', record.severity],
+        ],
+      },
+      {
+        title: 'Position And Source',
+        rows: [
+          ['Latitude', record.latitude],
+          ['Longitude', record.longitude],
+          ['Location', record.location],
+          ['Report time', formatDate(record.timestamp)],
+          ['Source', record.source],
+          ['Source URL', record.url],
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      title: 'Record Details',
+      rows: detailLines(record),
+    },
+  ];
+}
+
+function rawRecordFields(record) {
+  return Object.entries(record)
+    .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value) || value === null)
+    .map(([key, value]) => [key, value]);
+}
+
+function hasDisplayValue(value) {
+  return value !== null && value !== undefined && value !== '';
+}
+
+function displayValue(value) {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'Unavailable';
+  return hasDisplayValue(value) ? String(value) : 'Unavailable';
 }
 
 function detailLines(record) {

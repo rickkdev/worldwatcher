@@ -718,6 +718,211 @@ h1 {
   line-height: 1.35;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 5, 7, 0.72);
+  backdrop-filter: blur(6px);
+  padding: 18px;
+}
+
+.track-modal {
+  width: min(900px, calc(100vw - 36px));
+  max-height: min(820px, calc(100vh - 36px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid rgba(56, 242, 178, 0.34);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(9, 20, 23, 0.98), rgba(4, 10, 12, 0.98));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.track-modal-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  border-bottom: 1px solid rgba(30, 59, 63, 0.78);
+  padding: 18px;
+}
+
+.track-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(56, 242, 178, 0.36);
+  border-radius: 8px;
+  background: rgba(56, 242, 178, 0.08);
+  color: var(--green);
+}
+
+.track-modal-header h2 {
+  margin-top: 4px;
+  color: #f2fff8;
+  font-size: 1.32rem;
+  line-height: 1.15;
+}
+
+.track-modal-header p {
+  margin-top: 7px;
+  color: var(--muted);
+  line-height: 1.38;
+}
+
+.track-modal-header button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #071012;
+  color: var(--green);
+  cursor: pointer;
+}
+
+.track-modal-header button:hover {
+  border-color: rgba(56, 242, 178, 0.62);
+  background: #0d1d20;
+}
+
+.track-summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 18px;
+}
+
+.track-stat {
+  min-height: 68px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  border: 1px solid rgba(30, 59, 63, 0.86);
+  border-radius: 8px;
+  background: rgba(7, 16, 18, 0.86);
+  padding: 10px;
+}
+
+.track-stat span {
+  color: var(--muted-2);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.track-stat strong {
+  min-width: 0;
+  color: #f2fff8;
+  font-size: 0.94rem;
+  overflow-wrap: anywhere;
+}
+
+.track-summary {
+  display: grid;
+  gap: 7px;
+  border: 1px solid rgba(56, 242, 178, 0.2);
+  border-radius: 8px;
+  background: rgba(56, 242, 178, 0.06);
+  margin: 0 18px;
+  padding: 12px;
+}
+
+.track-summary strong {
+  color: var(--green);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.track-summary p {
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.track-detail-sections {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  overflow: auto;
+  padding: 0 18px 2px;
+}
+
+.detail-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(7, 16, 18, 0.76);
+  padding: 12px;
+}
+
+.detail-section h3 {
+  margin: 0 0 10px;
+  color: var(--green);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.detail-section dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.detail-section dl div {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+  border-top: 1px solid rgba(30, 59, 63, 0.5);
+  padding-top: 7px;
+}
+
+.detail-section dl div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.detail-section dt {
+  color: var(--muted-2);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.detail-section dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.track-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-top: 1px solid rgba(30, 59, 63, 0.78);
+  padding: 14px 18px 18px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.track-modal-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green);
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 @keyframes pulse {
   from {
     opacity: 0.86;
@@ -1006,5 +1211,47 @@ h1 {
 
   .last-updated {
     white-space: normal;
+  }
+
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .track-modal {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .track-modal-header {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 14px;
+  }
+
+  .track-modal-header h2 {
+    font-size: 1.08rem;
+  }
+
+  .track-summary-row,
+  .track-detail-sections {
+    grid-template-columns: 1fr;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .track-summary {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+
+  .detail-section dl div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .track-modal-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 14px 14px;
   }
 }

@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { AlertTriangle, Crosshair, Database, ExternalLink, PanelRightClose, PanelRightOpen, Plane, RefreshCw, Search, Shield, Ship, Signal, X } from 'lucide-react';
+import { AlertTriangle, Crosshair, Database, ExternalLink, Landmark, PanelRightClose, PanelRightOpen, Plane, RefreshCw, Search, Shield, Ship, Signal, Utensils, X } from 'lucide-react';
 import shipMarkerUrl from './assets/ship-marker.png';
 import './styles.css';
 
-const feedOrder = ['opensky', 'aisstream', 'gdelt', 'hdx', 'gdacs', 'usgs', 'nws', 'cisa-kev', 'un-sanctions', 'ofac-sdn'];
+const feedOrder = ['opensky', 'aisstream', 'gdelt', 'hdx', 'mod-activity', 'gdacs', 'usgs', 'nws', 'cisa-kev', 'un-sanctions', 'ofac-sdn'];
 const visibleCardLimit = 250;
 const feedContext = {
   opensky: {
@@ -39,6 +39,12 @@ const feedContext = {
     marker: 'alert',
     glyph: '!',
   },
+  'mod-activity': {
+    label: 'MOD restaurant activity proxy',
+    description: 'Public OSINT proxy around ministry of defense sites using Wikidata coordinates and nearby OpenStreetMap food POIs from Overpass. It does not expose private order volume.',
+    marker: 'mod',
+    glyph: 'M',
+  },
   usgs: {
     label: 'Seismic event',
     description: 'USGS reports earthquake events and related seismic products. This helps separate natural seismic activity from other incident signals.',
@@ -59,7 +65,7 @@ function App() {
   const [selectedFeed, setSelectedFeed] = useState('all');
   const [mapVisibility, setMapVisibility] = useState({});
   const [recordsPanelOpen, setRecordsPanelOpen] = useState(true);
-  const [militaryOnly, setMilitaryOnly] = useState(false);
+  const [militaryOnly, setMilitaryOnly] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState(null);
   const [query, setQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -140,6 +146,7 @@ function App() {
   const flightRecords = useMemo(() => mapRecords.filter((item) => item.feedId === 'opensky'), [mapRecords]);
   const openSkyStatus = sourceStats.find((feed) => feed.id === 'opensky');
   const militaryTrackCount = records.filter(isMilitaryTrack).length;
+  const modActivityCount = records.filter((item) => item.feedId === 'mod-activity').length;
 
   function toggleMapFeed(feedId) {
     setMapVisibility((current) => ({ ...current, [feedId]: current[feedId] === false }));
@@ -180,6 +187,7 @@ function App() {
       <section className="metrics-row">
         <Metric icon={<Database size={18} />} label="Sources" value={feeds.length} />
         <Metric icon={<Signal size={18} />} label="Records" value={records.length} />
+        <Metric icon={<Utensils size={18} />} label="MOD Sites" value={modActivityCount} />
         <Metric icon={<AlertTriangle size={18} />} label="Errors" value={sourceStats.filter((feed) => feed.error).length} />
       </section>
 
@@ -412,6 +420,9 @@ class SignalCanvasLayer extends L.Layer {
       } else if (record.feedId === 'aisstream') {
         this.drawShip(point, shipHeading(record));
         this.hits.push({ x: point.x, y: point.y, radius: 13, record, latLng });
+      } else if (record.feedId === 'mod-activity') {
+        this.drawModActivity(point, record);
+        this.hits.push({ x: point.x, y: point.y, radius: 20, record, latLng });
       } else if (contextFor(record).marker === 'conflict') {
         this.drawConflict(point, contextFor(record));
         this.hits.push({ x: point.x, y: point.y, radius: 12, record, latLng });
@@ -524,6 +535,42 @@ class SignalCanvasLayer extends L.Layer {
     ctx.restore();
   }
 
+  drawModActivity(point, record) {
+    const ctx = this.context;
+    const color = activityColor(record.activityLevel);
+    ctx.save();
+    ctx.translate(point.x, point.y);
+
+    ctx.fillStyle = activityFill(record.activityLevel);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 17, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#071012';
+    ctx.strokeStyle = '#f2fff8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(9, -5);
+    ctx.lineTo(7, 8);
+    ctx.lineTo(0, 12);
+    ctx.lineTo(-7, 8);
+    ctx.lineTo(-9, -5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = color;
+    ctx.font = '800 10px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('M', 0, 0.5);
+    ctx.restore();
+  }
+
   handleClick(event) {
     if (!this.map) return;
 
@@ -614,14 +661,17 @@ function TrackModal({ record, onClose }) {
   const isAircraft = record.feedId === 'opensky';
   const isVessel = record.feedId === 'aisstream';
   const isConflict = isConflictFeed(record.feedId);
+  const isModActivity = record.feedId === 'mod-activity';
   const context = contextFor(record);
   const coords = coordinatesFor(record);
   const sections = trackDetailSections(record);
   const rawFields = rawRecordFields(record);
-  const modalLabel = isAircraft ? 'Aircraft details' : isVessel ? 'Ship details' : 'Conflict event details';
-  const matchLabel = isAircraft || isVessel ? 'Military Match' : 'Position Precision';
+  const modalLabel = isAircraft ? 'Aircraft details' : isVessel ? 'Ship details' : isModActivity ? 'MOD activity details' : 'Conflict event details';
+  const matchLabel = isAircraft || isVessel ? 'Military Match' : isModActivity ? 'Activity Level' : 'Position Precision';
   const matchValue = isAircraft || isVessel
     ? (isMilitaryTrack(record) ? 'Heuristic match' : 'No public marker')
+    : isModActivity
+      ? `${record.activityLevel || 'unknown'} (${record.activityScore ?? 'n/a'})`
     : (record.locationPrecision || 'Source provided');
 
   useEffect(() => {
@@ -643,8 +693,8 @@ function TrackModal({ record, onClose }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="track-modal-header">
-          <div className={isConflict ? 'track-icon conflict' : 'track-icon'}>
-            {isAircraft ? <Plane size={22} /> : isVessel ? <Ship size={22} /> : <AlertTriangle size={22} />}
+          <div className={isConflict ? 'track-icon conflict' : isModActivity ? `track-icon mod ${record.activityLevel || 'low'}` : 'track-icon'}>
+            {isAircraft ? <Plane size={22} /> : isVessel ? <Ship size={22} /> : isModActivity ? <Landmark size={22} /> : <AlertTriangle size={22} />}
           </div>
           <div>
             <div className="popup-feed">{context.label}</div>
@@ -819,8 +869,8 @@ function formatDate(value) {
 
 function normalizeSeverity(value) {
   const severity = String(value || '').toLowerCase();
-  if (['red', 'extreme', 'severe', 'warning'].includes(severity)) return 'high';
-  if (['orange', 'moderate', 'watchlist'].includes(severity)) return 'medium';
+  if (['red', 'extreme', 'severe', 'warning', 'high'].includes(severity)) return 'high';
+  if (['orange', 'moderate', 'watchlist', 'medium'].includes(severity)) return 'medium';
   if (['live'].includes(severity)) return 'live';
   return 'low';
 }
@@ -844,7 +894,7 @@ function isConflictFeed(feedId) {
 }
 
 function usesDetailModal(record) {
-  return isTrackFeed(record.feedId) || isConflictFeed(record.feedId);
+  return isTrackFeed(record.feedId) || isConflictFeed(record.feedId) || record.feedId === 'mod-activity';
 }
 
 function isMilitaryTrack(item) {
@@ -945,9 +995,22 @@ function markerAnchor(record) {
 function markerColor(marker) {
   if (marker === 'vessel') return '#1f6f57';
   if (marker === 'conflict') return '#8f2f1e';
+  if (marker === 'mod') return '#f3bd4f';
   if (marker === 'alert' || marker === 'warning') return '#8f2f1e';
   if (marker === 'seismic') return '#745116';
   return '#34424f';
+}
+
+function activityColor(level) {
+  if (level === 'high') return '#ff5f57';
+  if (level === 'medium') return '#f3bd4f';
+  return '#38f2b2';
+}
+
+function activityFill(level) {
+  if (level === 'high') return 'rgba(255, 95, 87, 0.24)';
+  if (level === 'medium') return 'rgba(243, 189, 79, 0.22)';
+  return 'rgba(56, 242, 178, 0.2)';
 }
 
 function shipHeading(record) {
@@ -1102,12 +1165,67 @@ function trackDetailSections(record) {
     ];
   }
 
+  if (record.feedId === 'mod-activity') {
+    const delta = record.activityDelta || {};
+    const restaurants = Array.isArray(record.restaurants) ? record.restaurants : [];
+    return [
+      {
+        title: 'MOD Site',
+        rows: [
+          ['Name', record.title],
+          ['Country', record.country || record.location],
+          ['Coordinates', record.latitude && record.longitude ? `${Number(record.latitude).toFixed(4)}, ${Number(record.longitude).toFixed(4)}` : null],
+          ['Radius', record.radiusMeters ? `${record.radiusMeters} m` : null],
+          ['Position precision', record.locationPrecision],
+          ['Source URL', record.sourceUrl || record.url],
+        ],
+      },
+      {
+        title: 'Restaurant Activity Proxy',
+        rows: [
+          ['Activity level', record.activityLevel],
+          ['Activity score', record.activityScore],
+          ['Baseline score', record.baselineScore],
+          ['Spike percent', record.spikePercent !== null && record.spikePercent !== undefined ? `${record.spikePercent}%` : null],
+          ['Food POIs', record.restaurantCount],
+          ['Delivery/takeaway tagged', record.deliveryTaggedCount],
+          ['Recently edited POIs', record.recentlyEditedCount],
+          ['Collection error', record.collectionError],
+        ],
+      },
+      {
+        title: 'Refresh Delta',
+        rows: [
+          ['Food POI delta', signedNumber(delta.restaurantCount)],
+          ['Delivery/takeaway delta', signedNumber(delta.deliveryTaggedCount)],
+          ['Recently edited delta', signedNumber(delta.recentlyEditedCount)],
+          ['Activity score delta', signedNumber(delta.activityScore)],
+          ['Level changed', delta.activityLevelChanged],
+          ['Logged locally', '.data/mod-activity/changes.jsonl'],
+        ],
+      },
+      {
+        title: 'Nearby Food POIs',
+        rows: restaurants.slice(0, 12).map((item) => [
+          item.name || item.id,
+          [item.amenity, item.cuisine, item.delivery ? `delivery ${item.delivery}` : null, item.takeaway ? `takeaway ${item.takeaway}` : null].filter(Boolean).join(' · ') || item.id,
+        ]),
+      },
+    ];
+  }
+
   return [
     {
       title: 'Record Details',
       rows: detailLines(record),
     },
   ];
+}
+
+function signedNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  const number = Number(value);
+  return number > 0 ? `+${number}` : String(number);
 }
 
 function rawRecordFields(record) {

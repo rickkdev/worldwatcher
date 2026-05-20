@@ -14,6 +14,7 @@ It is built with **React**, **Vite**, **Leaflet**, and a small **Express** API l
 - ⚠️ **Disaster and public alert context** from GDACS, USGS, and NWS.
 - 📰 **Conflict/news coverage** from GDELT.
 - 🧰 **Humanitarian dataset discovery** from HDX.
+- 🏛️ **MOD activity bubbles** for ministry of defense sites using public restaurant/food POI anomaly signals inspired by PizzINT-style baselining.
 - 🛡️ **Cyber threat context** from CISA Known Exploited Vulnerabilities.
 - 📜 **Sanctions/watchlist context** from UN Security Council and OFAC SDN lists.
 - 🔎 **Searchable text records** with source, time, location, summary, severity, and source link.
@@ -107,6 +108,14 @@ The dev command runs `node server.mjs`, which starts Express and mounts Vite mid
 | `AISSTREAM_API_KEY` | For AISStream | AISStream WebSocket API key. |
 | `AISSTREAM_BOUNDING_BOXES_JSON` | For AISStream scope | JSON bounding boxes, for example `[[[-90,-180],[90,180]]]`. |
 | `AISSTREAM_MAX_VESSELS` | No | Maximum vessel records kept in memory. Defaults to `10000`. |
+| `MOD_ACTIVITY_LIMIT` | No | Maximum ministry of defense sites queried per refresh. Defaults to `10`. |
+| `MOD_ACTIVITY_RADIUS_M` | No | Radius in meters for nearby public restaurant/food POI lookup. Defaults to `750`. |
+| `MOD_ACTIVITY_MEDIUM_SPIKE_PCT` | No | Percent increase over the previous local baseline needed for yellow MOD activity. Defaults to `50`. |
+| `MOD_ACTIVITY_HIGH_SPIKE_PCT` | No | Percent increase over the previous local baseline needed for red MOD activity. Defaults to `150`. |
+| `MOD_ACTIVITY_MEDIUM_DELTA_SCORE` | No | Minimum absolute score increase needed for yellow MOD activity. Defaults to `5`. |
+| `MOD_ACTIVITY_HIGH_DELTA_SCORE` | No | Minimum absolute score increase needed for red MOD activity. Defaults to `12`. |
+| `MOD_ACTIVITY_DIR` | No | Directory for MOD activity snapshots and change logs. Defaults to `.data/mod-activity`. |
+| `MOD_ACTIVITY_SITES_JSON` | No | Optional JSON file of configured MOD sites with `title`, `country`, `latitude`, and `longitude`. |
 | `FEED_BACKUP_DIR` | No | Directory for server feed snapshots. Defaults to `.data/feed-backups`. |
 
 ### OpenSky Bounding Box
@@ -140,6 +149,7 @@ Keeping OpenSky bounded is important because full global state calls can be slow
 |---|---|---|---|
 | 📰 | GDELT Conflict Coverage | News-derived events | Fast media-derived signal. Noisy and not independently verified. |
 | 🧰 | HDX Conflict Datasets | Humanitarian datasets | Dataset discovery for conflict, security, and displacement context. |
+| 🛡️ | MOD Restaurant Activity | OSINT activity proxy | Uses Wikidata/Overpass public data to show restaurant/food POI density near MOD sites as green/yellow/red activity bubbles. It does not measure private order volume. |
 | 🌪️ | GDACS Global Alerts | Disaster/crisis alerts | Earthquakes, storms, floods, volcanoes, droughts, and related alerts. |
 | 🌎 | USGS Significant Earthquakes | Seismic events | Significant earthquake feed for natural seismic context. |
 | ⚠️ | NWS Active Alerts | U.S. public alerts | U.S.-only official alert feed. |
@@ -172,6 +182,7 @@ Worldwatcher uses several layers to keep the UI useful during feed outages:
 
 - 🧩 **In-memory API cache** in `server.mjs` to avoid hammering upstream feeds.
 - 💾 **Server JSON backups** written under `.data/feed-backups` by default.
+- 📈 **MOD activity history** written under `.data/mod-activity`, including `latest.json` and append-only `changes.jsonl`.
 - 🗃️ **Browser IndexedDB backups** so the UI can show the latest successful local snapshot if a later fetch returns empty or fails.
 - 🟡 **Stale indicators** in the UI when backup data is being shown.
 

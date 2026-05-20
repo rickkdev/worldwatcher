@@ -784,6 +784,24 @@ h1 {
   color: var(--amber);
 }
 
+.track-icon.mod.low {
+  border-color: rgba(56, 242, 178, 0.52);
+  background: rgba(56, 242, 178, 0.12);
+  color: var(--green);
+}
+
+.track-icon.mod.medium {
+  border-color: rgba(243, 189, 79, 0.58);
+  background: rgba(243, 189, 79, 0.14);
+  color: var(--amber);
+}
+
+.track-icon.mod.high {
+  border-color: rgba(255, 95, 87, 0.58);
+  background: rgba(255, 95, 87, 0.14);
+  color: var(--red);
+}
+
 .track-modal-header h2 {
   margin-top: 4px;
   color: #f2fff8;

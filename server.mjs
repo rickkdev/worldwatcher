@@ -14,11 +14,24 @@ const cacheTtlMs = 5 * 60 * 1000;
 const requestTimeoutMs = 25 * 1000;
 const openSkyRequestTimeoutMs = Number(process.env.OPENSKY_TIMEOUT_MS || 60_000);
 const backupDir = path.join(__dirname, process.env.FEED_BACKUP_DIR || '.data/feed-backups');
+const modActivityDir = path.join(__dirname, process.env.MOD_ACTIVITY_DIR || '.data/mod-activity');
 const aisMaxVessels = Number(process.env.AISSTREAM_MAX_VESSELS || 10000);
+const modActivityRadiusM = Number(process.env.MOD_ACTIVITY_RADIUS_M || 750);
+const modActivityLimit = Number(process.env.MOD_ACTIVITY_LIMIT || 10);
+const modActivityMediumSpikePct = Number(process.env.MOD_ACTIVITY_MEDIUM_SPIKE_PCT || 50);
+const modActivityHighSpikePct = Number(process.env.MOD_ACTIVITY_HIGH_SPIKE_PCT || 150);
+const modActivityMediumDeltaScore = Number(process.env.MOD_ACTIVITY_MEDIUM_DELTA_SCORE || 5);
+const modActivityHighDeltaScore = Number(process.env.MOD_ACTIVITY_HIGH_DELTA_SCORE || 12);
+const overpassTimeoutMs = Number(process.env.OVERPASS_TIMEOUT_MS || 6000);
+const overpassEndpoints = String(
+  process.env.OVERPASS_ENDPOINTS ||
+  'https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.openstreetmap.ru/api/interpreter',
+).split(',').map((endpoint) => endpoint.trim()).filter(Boolean);
 const openSkyToken = { value: null, expiresAt: 0 };
 const aisVessels = new Map();
 const aisStatus = { connected: false, lastMessageAt: null, error: null };
 let aisSocket = null;
+let modActivityRefreshPromise = null;
 
 const FEEDS = [
   {
@@ -52,6 +65,14 @@ const FEEDS = [
     category: 'Humanitarian datasets',
     url: 'https://data.humdata.org/api/3/action/package_search?q=conflict%20security%20displacement&rows=25',
     parser: parseHdx,
+  },
+  {
+    id: 'mod-activity',
+    name: 'MOD Restaurant Activity',
+    category: 'OSINT activity proxy',
+    sourceUrl: 'Wikidata SPARQL + Overpass API',
+    handler: fetchModActivityFeed,
+    ttlMs: 0,
   },
   {
     id: 'gdacs',
@@ -532,6 +553,438 @@ function fetchAisStreamFeed(feed) {
   };
 }
 
+async function fetchModActivityFeed(feed) {
+  const sites = await fetchModSites();
+  const previous = await readModActivityLatest();
+  if (!modActivityRefreshPromise) {
+    modActivityRefreshPromise = collectModActivityPayload(feed, sites, previous)
+      .catch((error) => console.warn('MOD activity refresh failed:', error.message))
+      .finally(() => {
+        modActivityRefreshPromise = null;
+      });
+  }
+
+  if (Array.isArray(previous.items) && previous.items.length) {
+    return {
+      ...previous,
+      stale: true,
+      refreshInProgress: true,
+      servedAt: new Date().toISOString(),
+      items: previous.items.map((item) => ({ ...item, refreshInProgress: true })),
+    };
+  }
+
+  return {
+    id: feed.id,
+    name: feed.name,
+    category: feed.category,
+    sourceUrl: feed.sourceUrl,
+    fetchedAt: new Date().toISOString(),
+    refreshInProgress: true,
+    items: sites.slice(0, modActivityLimit).map((site) => buildPendingModActivityItem(site)),
+  };
+}
+
+async function collectModActivityPayload(feed, sites, previous) {
+  const sampledSites = sites.slice(0, modActivityLimit);
+  const previousById = new Map((previous.items || []).map((item) => [item.siteId, item]));
+  const fetchedAt = new Date().toISOString();
+
+  const settled = await promiseAllSettledLimit(sampledSites, 3, (site) => fetchFoodActivity(site));
+  const items = settled.map((result, index) => {
+    const site = sampledSites[index];
+    if (result.status === 'fulfilled') {
+      const previousItem = previousById.get(site.siteId);
+      return buildModActivityItem(site, result.value, previousItem, fetchedAt);
+    }
+
+    const previousItem = previousById.get(site.siteId);
+    return buildModActivityItem(
+      site,
+      {
+        error: result.reason?.message || 'Unable to fetch nearby restaurant activity',
+        restaurants: previousItem?.restaurants || [],
+        restaurantCount: previousItem?.restaurantCount || 0,
+        deliveryTaggedCount: previousItem?.deliveryTaggedCount || 0,
+        recentlyEditedCount: previousItem?.recentlyEditedCount || 0,
+      },
+      previousItem,
+      fetchedAt,
+    );
+  });
+
+  const payload = {
+    id: feed.id,
+    name: feed.name,
+    category: feed.category,
+    sourceUrl: feed.sourceUrl,
+    fetchedAt,
+    items,
+  };
+
+  await writeModActivityHistory(payload, previous);
+  return payload;
+}
+
+function buildPendingModActivityItem(site) {
+  return {
+    siteId: site.siteId,
+    title: site.title,
+    summary: `Restaurant activity lookup pending within ${modActivityRadiusM} m.`,
+    location: site.country,
+    timestamp: new Date().toISOString(),
+    url: site.website || site.sourceUrl,
+    source: 'Wikidata + Overpass',
+    severity: 'low',
+    latitude: site.latitude,
+    longitude: site.longitude,
+    country: site.country,
+    radiusMeters: modActivityRadiusM,
+    activityLevel: 'low',
+    activityScore: 0,
+    restaurantCount: 0,
+    deliveryTaggedCount: 0,
+    recentlyEditedCount: 0,
+    activityDelta: null,
+    restaurants: [],
+    sourceUrl: site.sourceUrl,
+    website: site.website,
+    locationPrecision: site.locationPrecision,
+    refreshInProgress: true,
+  };
+}
+
+async function fetchModSites() {
+  const configured = await readConfiguredModSites();
+  if (configured.length) return configured;
+  if (process.env.MOD_ACTIVITY_DISCOVER_WIKIDATA !== 'true') return seedModSites();
+
+  const query = `
+    SELECT ?item ?itemLabel ?countryLabel ?coord ?website WHERE {
+      ?item rdfs:label ?itemLabel.
+      FILTER(LANG(?itemLabel) = "en")
+      FILTER(
+        CONTAINS(LCASE(?itemLabel), "ministry of defence") ||
+        CONTAINS(LCASE(?itemLabel), "ministry of defense") ||
+        CONTAINS(LCASE(?itemLabel), "department of defence") ||
+        CONTAINS(LCASE(?itemLabel), "department of defense")
+      )
+      OPTIONAL { ?item wdt:P17 ?country. }
+      OPTIONAL { ?item wdt:P625 ?coord. }
+      OPTIONAL { ?item wdt:P856 ?website. }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 200
+  `;
+
+  try {
+    const response = await fetch(`https://query.wikidata.org/sparql?query=${encodeURIComponent(query)}&format=json`, {
+      headers: {
+        Accept: 'application/sparql-results+json,application/json',
+        'User-Agent': 'worldwatcher-local-dashboard/0.1 (local OSINT dashboard)',
+      },
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    const data = await response.json();
+    const sites = (data.results?.bindings || [])
+      .map(wikidataModBindingToSite)
+      .filter(Boolean);
+
+    const deduped = dedupeBy(sites, (site) => site.siteId);
+    if (deduped.length) return deduped;
+  } catch (error) {
+    console.warn('Unable to load MOD sites from Wikidata, using seed list:', error.message);
+  }
+
+  return seedModSites();
+}
+
+async function readConfiguredModSites() {
+  if (!process.env.MOD_ACTIVITY_SITES_JSON) return [];
+
+  try {
+    const raw = await fs.readFile(path.resolve(__dirname, process.env.MOD_ACTIVITY_SITES_JSON), 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data.map(configuredModSiteToSite).filter(Boolean) : [];
+  } catch (error) {
+    console.warn('Unable to read MOD_ACTIVITY_SITES_JSON:', error.message);
+    return [];
+  }
+}
+
+function wikidataModBindingToSite(binding) {
+  const coords = pointToCoordinates(binding.coord?.value);
+  if (!coords) return null;
+
+  const name = binding.itemLabel?.value;
+  if (!name) return null;
+
+  const country = binding.countryLabel?.value || 'Unknown country';
+  return {
+    siteId: stableSiteId(`${country}-${name}`),
+    title: name,
+    country,
+    latitude: coords[0],
+    longitude: coords[1],
+    sourceUrl: binding.item?.value,
+    website: binding.website?.value || null,
+    locationPrecision: 'Wikidata coordinate',
+  };
+}
+
+function configuredModSiteToSite(site) {
+  const latitude = Number(site.latitude);
+  const longitude = Number(site.longitude);
+  if (!site.title || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return {
+    siteId: stableSiteId(site.siteId || `${site.country || ''}-${site.title}`),
+    title: site.title,
+    country: site.country || 'Unknown country',
+    latitude,
+    longitude,
+    sourceUrl: site.sourceUrl || null,
+    website: site.website || null,
+    locationPrecision: site.locationPrecision || 'Configured coordinate',
+  };
+}
+
+async function fetchFoodActivity(site) {
+  const query = `
+    [out:json][timeout:18];
+    (
+      node(around:${modActivityRadiusM},${site.latitude},${site.longitude})["amenity"~"^(restaurant|fast_food|cafe|food_court)$"];
+      way(around:${modActivityRadiusM},${site.latitude},${site.longitude})["amenity"~"^(restaurant|fast_food|cafe|food_court)$"];
+      relation(around:${modActivityRadiusM},${site.latitude},${site.longitude})["amenity"~"^(restaurant|fast_food|cafe|food_court)$"];
+    );
+    out center tags meta 80;
+  `;
+
+  const data = await fetchOverpassJson(query);
+  const restaurants = (data.elements || []).map(overpassFoodElement).filter(Boolean);
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+  return {
+    restaurants,
+    restaurantCount: restaurants.length,
+    deliveryTaggedCount: restaurants.filter((item) => item.delivery || item.takeaway).length,
+    recentlyEditedCount: restaurants.filter((item) => timestampValue(item.updatedAt) >= cutoff).length,
+  };
+}
+
+async function fetchOverpassJson(query) {
+  const errors = [];
+  for (const endpoint of overpassEndpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          Accept: 'application/json',
+          'User-Agent': 'worldwatcher-local-dashboard/0.1 (local OSINT dashboard)',
+        },
+        body: new URLSearchParams({ data: query }),
+        signal: AbortSignal.timeout(overpassTimeoutMs),
+      });
+
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return response.json();
+    } catch (error) {
+      errors.push(`${endpoint.replace(/^https?:\/\//, '')}: ${error.message}`);
+    }
+  }
+
+  throw new Error(`Overpass unavailable (${errors.join('; ')})`);
+}
+
+function overpassFoodElement(element) {
+  const tags = element.tags || {};
+  const latitude = firstNumber(element.lat, element.center?.lat);
+  const longitude = firstNumber(element.lon, element.center?.lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return {
+    id: `${element.type}/${element.id}`,
+    name: tags.name || tags.brand || tags.amenity || 'Unnamed food POI',
+    amenity: tags.amenity || null,
+    cuisine: tags.cuisine || null,
+    delivery: tags.delivery || null,
+    takeaway: tags.takeaway || null,
+    openingHours: tags.opening_hours || null,
+    updatedAt: element.timestamp || null,
+    latitude,
+    longitude,
+  };
+}
+
+function buildModActivityItem(site, activity, previousItem, fetchedAt) {
+  const metrics = modActivityMetrics(activity, previousItem);
+  const delta = previousItem ? {
+    restaurantCount: activity.restaurantCount - Number(previousItem.restaurantCount || 0),
+    deliveryTaggedCount: activity.deliveryTaggedCount - Number(previousItem.deliveryTaggedCount || 0),
+    recentlyEditedCount: activity.recentlyEditedCount - Number(previousItem.recentlyEditedCount || 0),
+    activityScore: metrics.deltaScore,
+    spikePercent: metrics.spikePercent,
+    activityLevelChanged: previousItem.activityLevel && previousItem.activityLevel !== metrics.activityLevel,
+  } : null;
+
+  return {
+    siteId: site.siteId,
+    title: site.title,
+    summary: activity.error && previousItem
+      ? `Using previous public restaurant activity proxy values; live Overpass refresh unavailable: ${activity.error}.`
+      : activity.error
+      ? `Public restaurant activity proxy unavailable: ${activity.error}.`
+      : `${activity.restaurantCount} public food POIs within ${modActivityRadiusM} m; ${activity.deliveryTaggedCount} tagged for delivery/takeaway.`,
+    location: site.country,
+    timestamp: fetchedAt,
+    url: site.website || site.sourceUrl,
+    source: 'Wikidata + Overpass',
+    severity: metrics.activityLevel,
+    latitude: site.latitude,
+    longitude: site.longitude,
+    country: site.country,
+    radiusMeters: modActivityRadiusM,
+    activityLevel: metrics.activityLevel,
+    activityScore: metrics.currentScore,
+    baselineScore: metrics.previousScore,
+    spikePercent: metrics.spikePercent,
+    restaurantCount: activity.restaurantCount,
+    deliveryTaggedCount: activity.deliveryTaggedCount,
+    recentlyEditedCount: activity.recentlyEditedCount,
+    activityDelta: delta,
+    restaurants: activity.restaurants.slice(0, 20),
+    sourceUrl: site.sourceUrl,
+    website: site.website,
+    locationPrecision: site.locationPrecision,
+    collectionError: activity.error || null,
+  };
+}
+
+function modActivityMetrics(activity, previousItem) {
+  const currentScore = modActivityScore(activity);
+  const previousScore = previousItem ? modActivityScore(previousItem) : currentScore;
+  const deltaScore = previousItem ? currentScore - previousScore : 0;
+  const spikePercent = previousItem && previousScore > 0
+    ? Math.round((deltaScore / previousScore) * 100)
+    : 0;
+
+  let activityLevel = 'low';
+  if (
+    previousItem &&
+    deltaScore >= modActivityHighDeltaScore &&
+    spikePercent >= modActivityHighSpikePct
+  ) {
+    activityLevel = 'high';
+  } else if (
+    previousItem &&
+    deltaScore >= modActivityMediumDeltaScore &&
+    spikePercent >= modActivityMediumSpikePct
+  ) {
+    activityLevel = 'medium';
+  }
+
+  return {
+    activityLevel,
+    currentScore,
+    previousScore,
+    deltaScore,
+    spikePercent,
+  };
+}
+
+function modActivityScore(item) {
+  return (
+    Math.min(Number(item.restaurantCount || 0), 30) +
+    Number(item.deliveryTaggedCount || 0) * 2 +
+    Number(item.recentlyEditedCount || 0) * 2
+  );
+}
+
+async function writeModActivityHistory(payload, previous) {
+  await fs.mkdir(modActivityDir, { recursive: true });
+  const latestPath = path.join(modActivityDir, 'latest.json');
+  const eventsPath = path.join(modActivityDir, 'changes.jsonl');
+  const previousById = new Map((previous.items || []).map((item) => [item.siteId, item]));
+  const events = payload.items
+    .map((item) => modActivityChangeEvent(item, previousById.get(item.siteId), payload.fetchedAt))
+    .filter(Boolean);
+
+  await fs.writeFile(latestPath, JSON.stringify(payload, null, 2));
+  if (events.length) {
+    await fs.appendFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
+  }
+}
+
+async function readModActivityLatest() {
+  try {
+    const raw = await fs.readFile(path.join(modActivityDir, 'latest.json'), 'utf8');
+    const payload = JSON.parse(raw);
+    return normalizeModActivityPayload(payload);
+  } catch {
+    return { items: [] };
+  }
+}
+
+function normalizeModActivityPayload(payload) {
+  if (!Array.isArray(payload?.items)) return payload;
+
+  return {
+    ...payload,
+    items: payload.items.map((item) => {
+      const metrics = modActivityMetrics(item, null);
+      return {
+        ...item,
+        activityLevel: 'low',
+        severity: 'low',
+        activityScore: metrics.currentScore,
+        baselineScore: item.baselineScore ?? metrics.previousScore,
+        spikePercent: item.spikePercent ?? 0,
+      };
+    }),
+  };
+}
+
+function modActivityChangeEvent(item, previous, observedAt) {
+  if (!previous) {
+    return {
+      observedAt,
+      siteId: item.siteId,
+      title: item.title,
+      changeType: 'created',
+      current: modActivityComparable(item),
+    };
+  }
+
+  const before = modActivityComparable(previous);
+  const current = modActivityComparable(item);
+  const changed = Object.keys(current).filter((key) => current[key] !== before[key]);
+  if (!changed.length) return null;
+
+  return {
+    observedAt,
+    siteId: item.siteId,
+    title: item.title,
+    changeType: 'updated',
+    changed,
+    before,
+    current,
+  };
+}
+
+function modActivityComparable(item) {
+  return {
+    activityLevel: item.activityLevel,
+    activityScore: item.activityScore,
+    restaurantCount: item.restaurantCount,
+    deliveryTaggedCount: item.deliveryTaggedCount,
+    recentlyEditedCount: item.recentlyEditedCount,
+    collectionError: item.collectionError || null,
+  };
+}
+
 function startAisStream() {
   if (!process.env.AISSTREAM_API_KEY || aisSocket?.readyState === WebSocket.OPEN || aisSocket?.readyState === WebSocket.CONNECTING) {
     return;
@@ -877,6 +1330,80 @@ function firstNumber(...values) {
 function cleanShipName(value) {
   const cleaned = String(value || '').replace(/@/g, '').trim();
   return cleaned || null;
+}
+
+function pointToCoordinates(value) {
+  const match = String(value || '').match(/Point\((-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\)/);
+  if (!match) return null;
+
+  const longitude = Number(match[1]);
+  const latitude = Number(match[2]);
+  return Number.isFinite(latitude) && Number.isFinite(longitude) ? [latitude, longitude] : null;
+}
+
+function dedupeBy(items, keyFn) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = keyFn(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function promiseAllSettledLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let index = 0;
+
+  async function runNext() {
+    const currentIndex = index;
+    index += 1;
+    if (currentIndex >= items.length) return;
+
+    try {
+      results[currentIndex] = { status: 'fulfilled', value: await worker(items[currentIndex], currentIndex) };
+    } catch (error) {
+      results[currentIndex] = { status: 'rejected', reason: error };
+    }
+
+    await runNext();
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+  return results;
+}
+
+function stableSiteId(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
+}
+
+function seedModSites() {
+  return [
+    ['United States Department of Defense', 'United States', 38.8719, -77.0563, 'https://www.defense.gov/'],
+    ['UK Ministry of Defence', 'United Kingdom', 51.5048, -0.1266, 'https://www.gov.uk/government/organisations/ministry-of-defence'],
+    ['Federal Ministry of Defence', 'Germany', 52.5203, 13.3736, 'https://www.bmvg.de/'],
+    ['Ministry of the Armed Forces', 'France', 48.8569, 2.3205, 'https://www.defense.gouv.fr/'],
+    ['Ministry of Defence', 'Italy', 41.9026, 12.4863, 'https://www.difesa.it/'],
+    ['Ministry of Defence', 'India', 28.6139, 77.2090, 'https://mod.gov.in/'],
+    ['Ministry of Defense', 'Japan', 35.6940, 139.7356, 'https://www.mod.go.jp/'],
+    ['Ministry of National Defense', 'China', 39.9042, 116.4074, 'http://eng.mod.gov.cn/'],
+    ['Department of Defence', 'Australia', -35.2809, 149.1300, 'https://www.defence.gov.au/'],
+    ['Department of National Defence', 'Canada', 45.4215, -75.6972, 'https://www.canada.ca/en/department-national-defence.html'],
+  ].map(([title, country, latitude, longitude, website]) => ({
+    siteId: stableSiteId(`${country}-${title}`),
+    title,
+    country,
+    latitude,
+    longitude,
+    website,
+    sourceUrl: website,
+    locationPrecision: 'Seed coordinate',
+  }));
 }
 
 function timestampValue(value) {

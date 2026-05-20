@@ -422,7 +422,7 @@ class SignalCanvasLayer extends L.Layer {
         this.hits.push({ x: point.x, y: point.y, radius: 13, record, latLng });
       } else if (record.feedId === 'mod-activity') {
         this.drawModActivity(point, record);
-        this.hits.push({ x: point.x, y: point.y, radius: 20, record, latLng });
+        this.hits.push({ x: point.x, y: point.y, radius: 27, record, latLng });
       } else if (contextFor(record).marker === 'conflict') {
         this.drawConflict(point, contextFor(record));
         this.hits.push({ x: point.x, y: point.y, radius: 12, record, latLng });
@@ -545,30 +545,49 @@ class SignalCanvasLayer extends L.Layer {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2.2;
     ctx.beginPath();
-    ctx.arc(0, 0, 17, 0, Math.PI * 2);
+    ctx.arc(0, 0, 22, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
+    this.drawPublicBuildingGlyph(ctx, color);
+
+    ctx.fillStyle = '#f2fff8';
+    ctx.font = '900 8px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MOD', 0, 14);
+    ctx.restore();
+  }
+
+  drawPublicBuildingGlyph(ctx, color) {
     ctx.fillStyle = '#071012';
     ctx.strokeStyle = '#f2fff8';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(0, -10);
-    ctx.lineTo(9, -5);
-    ctx.lineTo(7, 8);
-    ctx.lineTo(0, 12);
-    ctx.lineTo(-7, 8);
-    ctx.lineTo(-9, -5);
-    ctx.closePath();
+    ctx.lineWidth = 1.4;
+    roundRectPath(ctx, -13, -15, 26, 20, 4);
     ctx.fill();
     ctx.stroke();
 
     ctx.fillStyle = color;
-    ctx.font = '800 10px Inter, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('M', 0, 0.5);
-    ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(0, -13);
+    ctx.lineTo(10, -8);
+    ctx.lineTo(-10, -8);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    [-6, 0, 6].forEach((x) => {
+      ctx.beginPath();
+      ctx.moveTo(x, -6);
+      ctx.lineTo(x, 1);
+      ctx.stroke();
+    });
+
+    ctx.beginPath();
+    ctx.moveTo(-10, 3);
+    ctx.lineTo(10, 3);
+    ctx.stroke();
   }
 
   handleClick(event) {
@@ -1011,6 +1030,21 @@ function activityFill(level) {
   if (level === 'high') return 'rgba(255, 95, 87, 0.24)';
   if (level === 'medium') return 'rgba(243, 189, 79, 0.22)';
   return 'rgba(56, 242, 178, 0.2)';
+}
+
+function roundRectPath(ctx, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
 }
 
 function shipHeading(record) {

@@ -47,6 +47,7 @@ function App() {
   const [selectedFeed, setSelectedFeed] = useState('all');
   const [mapVisibility, setMapVisibility] = useState({});
   const [recordsPanelOpen, setRecordsPanelOpen] = useState(true);
+  const [militaryOnly, setMilitaryOnly] = useState(false);
   const [query, setQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -106,7 +107,7 @@ function App() {
   const filteredRecords = records.filter((item) => {
     const matchesFeed = selectedFeed === 'all' || item.feedId === selectedFeed;
     const haystack = `${item.title} ${item.summary} ${item.location} ${item.source} ${item.category}`.toLowerCase();
-    return matchesFeed && haystack.includes(query.toLowerCase());
+    return matchesFeed && matchesMilitaryFilter(item, militaryOnly) && haystack.includes(query.toLowerCase());
   });
   const visibleRecords = filteredRecords.slice(0, visibleCardLimit);
 
@@ -119,11 +120,13 @@ function App() {
     fetchedAt: feedData[feed.id]?.fetchedAt,
   }));
   const selectedSource = selectedFeed === 'all' ? null : sourceStats.find((feed) => feed.id === selectedFeed);
-  const allMapRecords = useMemo(() => records.filter((item) => hasCoordinates(item)), [records]);
+  const militaryFilteredRecords = useMemo(() => records.filter((item) => matchesMilitaryFilter(item, militaryOnly)), [records, militaryOnly]);
+  const allMapRecords = useMemo(() => militaryFilteredRecords.filter((item) => hasCoordinates(item)), [militaryFilteredRecords]);
   const mapRecords = useMemo(() => allMapRecords.filter((item) => mapVisibility[item.feedId] !== false), [allMapRecords, mapVisibility]);
   const allFlightRecords = useMemo(() => allMapRecords.filter((item) => item.feedId === 'opensky'), [allMapRecords]);
   const flightRecords = useMemo(() => mapRecords.filter((item) => item.feedId === 'opensky'), [mapRecords]);
   const openSkyStatus = sourceStats.find((feed) => feed.id === 'opensky');
+  const militaryTrackCount = records.filter(isMilitaryTrack).length;
 
   function toggleMapFeed(feedId) {
     setMapVisibility((current) => ({ ...current, [feedId]: current[feedId] === false }));
@@ -178,6 +181,18 @@ function App() {
             <button type="button" onClick={() => setAllMapFeeds(true)}>Show all on map</button>
             <button type="button" onClick={() => setAllMapFeeds(false)}>Hide all</button>
           </div>
+          <label className="military-filter">
+            <input
+              type="checkbox"
+              checked={militaryOnly}
+              onChange={(event) => setMilitaryOnly(event.target.checked)}
+            />
+            <span className="military-filter-switch" />
+            <span>
+              Military tracks only
+              <small>{militaryTrackCount} aircraft/vessel heuristic matches</small>
+            </span>
+          </label>
           {sourceStats.map((feed) => (
             <div className="source-row" key={feed.id}>
               <button
@@ -249,6 +264,12 @@ function App() {
               <div className="feed-warning">
                 <strong>{selectedSource.name} backup</strong>
                 <span>Showing the latest local snapshot because {selectedSource.backupReason || 'the live feed was unavailable'}.</span>
+              </div>
+            )}
+            {militaryOnly && (
+              <div className="feed-warning">
+                <strong>Military track filter active</strong>
+                <span>Aircraft and vessel records are limited to public-data heuristic matches. Other feed categories remain visible.</span>
               </div>
             )}
             {filteredRecords.length > visibleCardLimit && (
@@ -631,6 +652,54 @@ function normalizeSeverity(value) {
 
 function hasCoordinates(item) {
   return Boolean(coordinatesFor(item));
+}
+
+function matchesMilitaryFilter(item, militaryOnly) {
+  if (!militaryOnly) return true;
+  if (!isTrackFeed(item.feedId)) return true;
+  return isMilitaryTrack(item);
+}
+
+function isTrackFeed(feedId) {
+  return feedId === 'opensky' || feedId === 'aisstream';
+}
+
+function isMilitaryTrack(item) {
+  if (item.feedId === 'opensky') return isMilitaryAircraft(item);
+  if (item.feedId === 'aisstream') return isMilitaryVessel(item);
+  return false;
+}
+
+function isMilitaryAircraft(item) {
+  const callsign = String(item.callsign || item.title?.split(' over ')[0] || '').toUpperCase().replace(/\s+/g, '');
+  if (!callsign) return false;
+
+  const exactPrefixes = [
+    'ASY', 'BAF', 'CEF', 'CFC', 'CNV', 'CTM', 'FAF', 'GAF', 'IAM', 'KAF', 'MMF', 'NAF',
+    'NATO', 'PLF', 'RCH', 'RRR', 'SAM', 'SPAR',
+  ];
+  if (exactPrefixes.some((prefix) => callsign.startsWith(prefix))) return true;
+
+  const knownTerms = [
+    'AIRFORCE', 'ASCOT', 'BISON', 'DUKE', 'EVAC', 'FORTE', 'HOKE', 'JAKE', 'KING',
+    'LAGR', 'PAT', 'RAIDR', 'REACH', 'TIGER',
+  ];
+  return knownTerms.some((term) => callsign.includes(term));
+}
+
+function isMilitaryVessel(item) {
+  const shipType = String(item.shipType || '').toLowerCase();
+  if (shipType === '35' || shipType.includes('military') || shipType.includes('law enforcement')) return true;
+
+  const name = String(item.vesselName || item.title || '').toUpperCase();
+  const navalPrefixes = [
+    'USS ', 'USNS ', 'USCGC ', 'HMS ', 'RFA ', 'HMCS ', 'HMAS ', 'HNLMS ', 'FS ', 'FGS ',
+    'ITS ', 'ESPS ', 'SPS ', 'TCG ', 'ROKS ', 'JS ', 'JDS ', 'INS ', 'PNS ', 'SNS ',
+  ];
+  if (navalPrefixes.some((prefix) => name.startsWith(prefix))) return true;
+
+  const navalTerms = ['NAVY', 'NAVAL', 'WARSHIP', 'FRIGATE', 'DESTROYER', 'CORVETTE', 'PATROL', 'COAST GUARD'];
+  return navalTerms.some((term) => name.includes(term));
 }
 
 function coordinatesFor(item) {
